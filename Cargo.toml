@@ -1,0 +1,11 @@
+[package]
+name = "two-round-fully-adaptive"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bulletproofs = "5"
+curve25519-dalek = { version = "4", features = ["alloc"] }
+merlin = "3"
+rand = "0.8"
+sha2 = "0.10"
