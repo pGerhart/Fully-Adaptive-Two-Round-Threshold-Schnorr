@@ -7,11 +7,13 @@ fn main() {
     let poly = Polynomial::random(100);
     let z = rand_scalar();
 
+    let pp = Params::setup(100, "PolyDomain");
+
     // Evaluate and prove
-    let (y, proof, public) = poly.prove_eval(z, "PolyDomain");
+    let (y, proof, public) = poly.prove_eval(z, &pp);
 
     // Verify
-    let ok = verify_eval(&public, y, &proof);
+    let ok = verify_eval(&public, y, &proof, &pp);
     println!(
         "Polynomial degree {} evaluated at z: verify = {ok}",
         poly.degree()
