@@ -9,6 +9,10 @@ curve25519-dalek = { version = "4", features = ["alloc"] }
 merlin = "3"
 rand = "0.8"
 sha2 = "0.10"
+blake3 = { version = "1", optional = true }
+
+[features]
+fast-hash = ["blake3"]
 
 
 [dev-dependencies]
