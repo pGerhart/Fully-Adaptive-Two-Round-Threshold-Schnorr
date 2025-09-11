@@ -9,16 +9,26 @@ use merlin::{Transcript, TranscriptRng};
 use rand::rngs::OsRng;
 
 /// Parameters (bases) for Pedersen commitments.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Params {
     pub g0: RistrettoPoint,     // base for y
     pub g_rho: RistrettoPoint,  // blinding base
     pub g: Vec<RistrettoPoint>, // bases for coeffs (len = m)
 }
+
 impl Params {
     pub fn setup(m: usize, domain: &str) -> Self {
         let m = next_pow2(m);
-        let g0 = h2p(domain, "g0", 0);
+        let g0: RistrettoPoint = h2p(domain, "g_0", 0);
+        let g_rho: RistrettoPoint = h2p(domain, "g_rho", 0);
+        let g = (0..m as u64).map(|i| h2p(domain, "g", i)).collect();
+        Self { g0, g_rho, g }
+    }
+
+    /// Like `setup`, but lets the caller *fix* g0. Useful to share the
+    /// same `g` used by the signature scheme for `g^y` in the IPA.
+    pub fn setup_with_g0(m: usize, domain: &str, g0: RistrettoPoint) -> Self {
+        let m = next_pow2(m);
         let g_rho = h2p(domain, "g_rho", 0);
         let g = (0..m as u64).map(|i| h2p(domain, "g", i)).collect();
         Self { g0, g_rho, g }
@@ -26,12 +36,13 @@ impl Params {
 }
 
 /// A univariate polynomial f(X) = a_0 + a_1 X + ... + a_d X^d.
+#[derive(Clone, Debug)]
 pub struct Polynomial {
-    coeffs: Vec<Scalar>,   // length = d+1
-    rho_f: Scalar,         // blinding for C_f
-    cf: RistrettoPoint,    // commitment to coeffs
-    x_padded: Vec<Scalar>, // cached padded coeffs (len = m)
-    m: usize,              // cache m = pp.g.len()
+    coeffs: Vec<Scalar>,    // length = d+1
+    pub rho_f: Scalar,      // blinding for C_f
+    pub cf: RistrettoPoint, // commitment to coeffs
+    x_padded: Vec<Scalar>,  // cached padded coeffs (len = m)
+    m: usize,               // cache m = pp.g.len()
 }
 
 // Build x_padded and m at keygen:
@@ -69,7 +80,7 @@ impl Polynomial {
     }
 
     /// Evaluate f(z) with Horner's rule.
-    pub fn eval(&self, z: Scalar) -> Scalar {
+    pub fn eval(&self, z: &Scalar) -> Scalar {
         self.coeffs
             .iter()
             .rev()
@@ -95,7 +106,7 @@ impl Polynomial {
     }
 
     /// Produce (y, proof, public inputs) for f(z), reusing cached Cf and rho_f.
-    pub fn prove_eval(&self, z: Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval) {
+    pub fn prove_eval(&self, z: Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval, Scalar) {
         // Safety checks
         let n = self.coeffs.len();
         let m = pp.g.len();
@@ -146,7 +157,7 @@ impl Polynomial {
         .expect("LinearProof::create");
 
         let public = PublicEval { Cf, Cy, z, a, P };
-        (y, proof, public)
+        (y, proof, public, rho_y)
     }
 }
 
