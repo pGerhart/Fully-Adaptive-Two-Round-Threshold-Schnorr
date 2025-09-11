@@ -106,7 +106,7 @@ impl Polynomial {
     }
 
     /// Produce (y, proof, public inputs) for f(z), reusing cached Cf and rho_f.
-    pub fn prove_eval(&self, z: Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval, Scalar) {
+    pub fn prove_eval(&self, z: &Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval, Scalar) {
         // Safety checks
         let n = self.coeffs.len();
         let m = pp.g.len();
@@ -156,7 +156,13 @@ impl Polynomial {
         )
         .expect("LinearProof::create");
 
-        let public = PublicEval { Cf, Cy, z, a, P };
+        let public = PublicEval {
+            Cf,
+            Cy,
+            z: z.clone(),
+            a,
+            P,
+        };
         (y, proof, public, rho_y)
     }
 }

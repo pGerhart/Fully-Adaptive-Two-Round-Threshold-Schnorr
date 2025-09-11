@@ -11,7 +11,7 @@ fn main() {
     let z = rand_scalar();
 
     // Evaluate and prove
-    let (y, proof, public, _) = poly.prove_eval(z, &sp.pp);
+    let (y, proof, public, _) = poly.prove_eval(&z, &sp.pp);
 
     // Verify
     let ok = verify_eval(&public, &proof, &sp.pp);
