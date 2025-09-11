@@ -12,9 +12,9 @@ fn bench_poly_eval(c: &mut Criterion) {
         let m = next_pow2(n); // required by LinearProof
 
         // --- prepare inputs OUTSIDE the hot loop ---
-        let poly = Polynomial::random(degree);
-        let z = rand_scalar();
         let pp = Params::setup(m, "PolyBench"); // reuse the same params for this degree
+        let poly = Polynomial::random(degree, &pp);
+        let z = rand_scalar();
 
         group.bench_with_input(BenchmarkId::from_parameter(degree), &degree, |b, &_deg| {
             b.iter(|| {

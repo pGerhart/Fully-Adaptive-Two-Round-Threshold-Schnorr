@@ -28,18 +28,34 @@ impl Params {
 /// A univariate polynomial f(X) = a_0 + a_1 X + ... + a_d X^d.
 pub struct Polynomial {
     coeffs: Vec<Scalar>, // length = d+1
+    rho_f: Scalar,       // blinding for C_f
+    cf: RistrettoPoint,  // commitment to coeffs
 }
 
 impl Polynomial {
-    pub fn new(coeffs: Vec<Scalar>) -> Self {
-        Self { coeffs }
-    }
-
-    /// sample a random polynomial of given degree d:
-    /// coeffs = [a_0, ..., a_d] with each a_i uniform in Scalar
-    pub fn random(degree: usize) -> Self {
+    pub fn random(degree: usize, pp: &Params) -> Self {
+        // sample coefficients
         let coeffs: Vec<Scalar> = (0..=degree).map(|_| rand_scalar()).collect();
-        Self { coeffs }
+
+        // sample rho_f
+        let rho_f = rand_scalar();
+
+        // pad coeffs to m
+        let n = coeffs.len();
+        let m = pp.g.len();
+        debug_assert!(m.is_power_of_two());
+        debug_assert!(m >= n, "Params.g too short for polynomial degree");
+
+        let mut scalars = Vec::with_capacity(m);
+        scalars.extend_from_slice(&coeffs);
+        if m > n {
+            scalars.resize(m, Scalar::ZERO);
+        }
+
+        // compute Cf once
+        let cf = RistrettoPoint::vartime_multiscalar_mul(&scalars, &pp.g) + pp.g_rho * rho_f;
+
+        Self { coeffs, rho_f, cf }
     }
 
     pub fn degree(&self) -> usize {
@@ -71,18 +87,20 @@ impl Polynomial {
         // Fast variable-time MSM (OK for benchmarking; avoid in constant-time contexts)
         RistrettoPoint::vartime_multiscalar_mul(&scalars, &pp.g) + pp.g_rho * rho_f
     }
-
-    /// Produce (y, proof, public inputs) for f(z).
+    /// Produce (y, proof, public inputs) for f(z), reusing cached Cf and rho_f.
     pub fn prove_eval(&self, z: Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval) {
         let n = self.coeffs.len();
         let m = pp.g.len();
         debug_assert!(m.is_power_of_two());
+        debug_assert!(m >= next_pow2(n), "Params.g must be >= next_pow2(degree+1)");
+        // IMPORTANT: we committed Cf with an m equal to pp.g.len() at creation time.
+        // Make sure callers pass a pp with the SAME m.
         debug_assert!(
-            m >= next_pow2(n),
-            "Params.g must be at least next_pow2(degree+1)"
+            m >= n,
+            "Params.g too short for polynomial degree used when Cf was computed"
         );
 
-        let rho_f = rand_scalar();
+        // Fresh blinding for Cy only
         let rho_y = rand_scalar();
 
         // Powers of z and evaluation in one pass
@@ -98,18 +116,18 @@ impl Polynomial {
             a.resize(m, Scalar::ZERO);
         }
 
-        // Pad coeffs to m (build once, avoid cloning twice)
+        // Pad coeffs to m for the witness vector x (LinearProof API needs it)
         let mut x = Vec::with_capacity(m);
         x.extend_from_slice(&self.coeffs);
         if m > n {
             x.resize(m, Scalar::ZERO);
         }
 
-        // Fast MSM for Cf
-        let Cf = RistrettoPoint::vartime_multiscalar_mul(&x, &pp.g) + pp.g_rho * rho_f;
+        // Reuse cached Cf and rho_f; only compute Cy here
+        let Cf = self.cf;
         let Cy = pp.g0 * y + pp.g_rho * rho_y;
         let P = (Cf + Cy).compress();
-        let rho = rho_f + rho_y;
+        let rho = self.rho_f + rho_y;
 
         let mut t = Transcript::new(b"PolyEval");
         let mut rng = OsRng;
@@ -118,7 +136,7 @@ impl Polynomial {
             &mut rng,
             &P,
             rho,
-            x,            // move the padded coeffs
+            x,            // padded coeffs (witness)
             a.clone(),    // keep public a for PublicEval
             pp.g.clone(), // bases
             &pp.g0,
