@@ -5,7 +5,7 @@ use curve25519_dalek::{
     scalar::Scalar,
     traits::VartimeMultiscalarMul,
 };
-use merlin::Transcript;
+use merlin::{Transcript, TranscriptRng};
 use rand::rngs::OsRng;
 
 /// Parameters (bases) for Pedersen commitments.
@@ -27,35 +27,41 @@ impl Params {
 
 /// A univariate polynomial f(X) = a_0 + a_1 X + ... + a_d X^d.
 pub struct Polynomial {
-    coeffs: Vec<Scalar>, // length = d+1
-    rho_f: Scalar,       // blinding for C_f
-    cf: RistrettoPoint,  // commitment to coeffs
+    coeffs: Vec<Scalar>,   // length = d+1
+    rho_f: Scalar,         // blinding for C_f
+    cf: RistrettoPoint,    // commitment to coeffs
+    x_padded: Vec<Scalar>, // cached padded coeffs (len = m)
+    m: usize,              // cache m = pp.g.len()
 }
 
+// Build x_padded and m at keygen:
 impl Polynomial {
     pub fn random(degree: usize, pp: &Params) -> Self {
-        // sample coefficients
         let coeffs: Vec<Scalar> = (0..=degree).map(|_| rand_scalar()).collect();
-
-        // sample rho_f
         let rho_f = rand_scalar();
 
-        // pad coeffs to m
         let n = coeffs.len();
         let m = pp.g.len();
         debug_assert!(m.is_power_of_two());
         debug_assert!(m >= n, "Params.g too short for polynomial degree");
 
-        let mut scalars = Vec::with_capacity(m);
-        scalars.extend_from_slice(&coeffs);
+        // cache padded coeffs once
+        let mut x_padded = Vec::with_capacity(m);
+        x_padded.extend_from_slice(&coeffs);
         if m > n {
-            scalars.resize(m, Scalar::ZERO);
+            x_padded.resize(m, Scalar::ZERO);
         }
 
         // compute Cf once
-        let cf = RistrettoPoint::vartime_multiscalar_mul(&scalars, &pp.g) + pp.g_rho * rho_f;
+        let cf = RistrettoPoint::vartime_multiscalar_mul(&x_padded, &pp.g) + pp.g_rho * rho_f;
 
-        Self { coeffs, rho_f, cf }
+        Self {
+            coeffs,
+            rho_f,
+            cf,
+            x_padded,
+            m,
+        }
     }
 
     pub fn degree(&self) -> usize {
@@ -87,23 +93,16 @@ impl Polynomial {
         // Fast variable-time MSM (OK for benchmarking; avoid in constant-time contexts)
         RistrettoPoint::vartime_multiscalar_mul(&scalars, &pp.g) + pp.g_rho * rho_f
     }
+
     /// Produce (y, proof, public inputs) for f(z), reusing cached Cf and rho_f.
     pub fn prove_eval(&self, z: Scalar, pp: &Params) -> (Scalar, LinearProof, PublicEval) {
+        // Safety checks
         let n = self.coeffs.len();
         let m = pp.g.len();
-        debug_assert!(m.is_power_of_two());
-        debug_assert!(m >= next_pow2(n), "Params.g must be >= next_pow2(degree+1)");
-        // IMPORTANT: we committed Cf with an m equal to pp.g.len() at creation time.
-        // Make sure callers pass a pp with the SAME m.
-        debug_assert!(
-            m >= n,
-            "Params.g too short for polynomial degree used when Cf was computed"
-        );
+        debug_assert!(m == self.m, "pp.m changed since keygen");
+        debug_assert!(m.is_power_of_two() && m >= next_pow2(n));
 
-        // Fresh blinding for Cy only
-        let rho_y = rand_scalar();
-
-        // Powers of z and evaluation in one pass
+        // Build powers a(z) and y in one pass
         let mut a = Vec::with_capacity(m);
         let mut pow = Scalar::ONE;
         let mut y = Scalar::ZERO;
@@ -116,29 +115,31 @@ impl Polynomial {
             a.resize(m, Scalar::ZERO);
         }
 
-        // Pad coeffs to m for the witness vector x (LinearProof API needs it)
-        let mut x = Vec::with_capacity(m);
-        x.extend_from_slice(&self.coeffs);
-        if m > n {
-            x.resize(m, Scalar::ZERO);
-        }
+        // Make transcript; derive rho_y from it (faster, and FS-tied)
+        let mut t = Transcript::new(b"PolyEval");
+        t.append_u64(b"m", m as u64);
+        t.append_message(b"g0", pp.g0.compress().as_bytes());
+        t.append_message(b"g_rho", pp.g_rho.compress().as_bytes());
+        t.append_message(b"z", z.as_bytes());
+        let mut tr_rng: TranscriptRng = t.build_rng().finalize(&mut OsRng);
 
-        // Reuse cached Cf and rho_f; only compute Cy here
-        let Cf = self.cf;
+        let rho_y = Scalar::random(&mut tr_rng);
         let Cy = pp.g0 * y + pp.g_rho * rho_y;
+
+        // Combine with cached Cf
+        let Cf = self.cf;
         let P = (Cf + Cy).compress();
         let rho = self.rho_f + rho_y;
 
-        let mut t = Transcript::new(b"PolyEval");
-        let mut rng = OsRng;
+        // Create proof (must pass owned Vecs; clone cached x_padded)
         let proof = LinearProof::create(
             &mut t,
-            &mut rng,
+            &mut tr_rng,
             &P,
             rho,
-            x,            // padded coeffs (witness)
-            a.clone(),    // keep public a for PublicEval
-            pp.g.clone(), // bases
+            self.x_padded.clone(), // cheap clone vs rebuild/resize each time
+            a.clone(),             // pass a to the proof; keep original for PublicEval
+            pp.g.clone(),
             &pp.g0,
             &pp.g_rho,
         )
@@ -159,8 +160,16 @@ pub struct PublicEval {
 }
 
 /// Verify a polynomial evaluation proof.
-pub fn verify_eval(public: &PublicEval, y: Scalar, proof: &LinearProof, pp: &Params) -> bool {
+pub fn verify_eval(public: &PublicEval, proof: &LinearProof, pp: &Params) -> bool {
     let mut tr = Transcript::new(b"PolyEval");
+
+    // must match prover's absorbs EXACTLY and in the same order
+    let m = public.a.len(); // safer than pp.g.len() in case of mismatch
+    tr.append_u64(b"m", m as u64);
+    tr.append_message(b"g0", pp.g0.compress().as_bytes());
+    tr.append_message(b"g_rho", pp.g_rho.compress().as_bytes());
+    tr.append_message(b"z", public.z.as_bytes());
+
     proof
         .verify(
             &mut tr,

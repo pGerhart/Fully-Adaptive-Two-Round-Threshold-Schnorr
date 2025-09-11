@@ -1,4 +1,3 @@
-use merlin::Transcript;
 use two_round_fully_adaptive::helpers::rand_scalar;
 use two_round_fully_adaptive::polynomial::*;
 
