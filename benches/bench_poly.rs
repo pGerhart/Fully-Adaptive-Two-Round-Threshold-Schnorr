@@ -1,26 +1,37 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use two_round_fully_adaptive::helpers::{next_pow2, rand_scalar};
-use two_round_fully_adaptive::polynomial::{Params, Polynomial};
+use two_round_fully_adaptive::polynomial::{Params, Polynomial, verify_eval};
 
 fn bench_poly_eval(c: &mut Criterion) {
-    let mut group = c.benchmark_group("poly_eval_prove");
+    let mut group = c.benchmark_group("poly_eval");
 
-    // degrees = 2^4, 2^6, ..., 2^16
     for exp in (4..=16).step_by(2) {
-        let degree = 1 << exp; // polynomial degree d
-        let n = degree + 1; // number of coeffs
-        let m = next_pow2(n); // required by LinearProof
+        let degree = 1 << exp;
+        let n = degree + 1;
+        let m = next_pow2(n);
 
-        // --- prepare inputs OUTSIDE the hot loop ---
-        let pp = Params::setup(m, "PolyBench"); // reuse the same params for this degree
+        let pp = Params::setup(m, "PolyBench");
         let poly = Polynomial::random(degree, &pp);
         let z = rand_scalar();
 
-        group.bench_with_input(BenchmarkId::from_parameter(degree), &degree, |b, &_deg| {
+        // --- Prove ---
+        group.bench_with_input(BenchmarkId::new("prove", degree), &degree, |b, &_deg| {
             b.iter(|| {
-                // benchmark only proving
                 let (_y, _proof, _public) = poly.prove_eval(black_box(z), &pp);
-                // black_box(_proof); // uncomment if you want to keep the proof live
+                // keep values alive
+                black_box(&_proof);
+                black_box(&_public);
+            });
+        });
+
+        // Prepare a proof once for verify benchmark
+        let (_y, proof, public) = poly.prove_eval(z, &pp);
+
+        // --- Verify ---
+        group.bench_with_input(BenchmarkId::new("verify", degree), &degree, |b, &_deg| {
+            b.iter(|| {
+                let ok = verify_eval(black_box(&public), black_box(&proof), &pp);
+                black_box(ok);
             });
         });
     }

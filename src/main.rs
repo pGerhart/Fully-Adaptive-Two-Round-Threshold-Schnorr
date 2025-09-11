@@ -11,7 +11,7 @@ fn main() {
     let (y, proof, public) = poly.prove_eval(z, &pp);
 
     // Verify
-    let ok = verify_eval(&public, y, &proof, &pp);
+    let ok = verify_eval(&public, &proof, &pp);
     println!(
         "Polynomial degree {} evaluated at z: verify = {ok}",
         poly.degree()
