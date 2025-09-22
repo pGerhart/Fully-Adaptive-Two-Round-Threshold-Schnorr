@@ -1,11 +1,3 @@
-//! High-performance helpers for polynomial evaluation and group operations
-//! tuned for benchmarking large degrees (e.g., 2^16).
-//!
-//! Highlights:
-//! - Fast MSM via `vartime_multiscalar_mul` (see `msm_vt`).
-//! - In-place, reusable buffers to avoid heap churn.
-//! - Optional `fast-hash` feature to speed up generator derivation.
-
 use curve25519_dalek::{
     ristretto::RistrettoPoint,
     scalar::Scalar,
