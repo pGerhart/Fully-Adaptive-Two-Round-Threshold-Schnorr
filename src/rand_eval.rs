@@ -1,13 +1,10 @@
 // src/sig_eval.rs
+use crate::helpers::msm;
 use crate::polynomial::PublicEval as PolyPublic; // for constructing PublicEval on verifier
 use crate::rel_eval::{RelEvalProof, prove_rel_eval, verify_rel_eval};
 use crate::sig_keygen::UserSecret;
 use crate::sig_setup::SigParams;
-use curve25519_dalek::{
-    ristretto::{CompressedRistretto, RistrettoPoint},
-    scalar::Scalar,
-    traits::VartimeMultiscalarMul,
-};
+use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar};
 use merlin::Transcript;
 use rand::{CryptoRng, RngCore};
 
@@ -21,7 +18,7 @@ pub fn compute_r(
     z: &Scalar,
 ) -> (Scalar, RistrettoPoint) {
     let r = sk.poly.eval(z);
-    let R = RistrettoPoint::vartime_multiscalar_mul([&r, &sk.w, &sk.u], [&sp.g, h1, h2]);
+    let R = msm(&[r, sk.w, sk.u], &[sp.g, *h1, *h2]);
     (r, R)
 }
 

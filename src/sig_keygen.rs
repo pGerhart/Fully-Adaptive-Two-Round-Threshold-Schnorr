@@ -1,4 +1,3 @@
-// src/sig_keygen.rs
 use crate::helpers::rand_scalar;
 use crate::polynomial::{Params, Polynomial};
 use crate::sig_setup::SigParams;

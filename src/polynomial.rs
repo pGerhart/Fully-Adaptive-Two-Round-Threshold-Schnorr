@@ -1,12 +1,12 @@
-use crate::helpers::{h2p, next_pow2, rand_scalar};
+use crate::helpers::{h2p, msm, next_pow2, rand_scalar};
 use bulletproofs::LinearProof;
 use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
     scalar::Scalar,
-    traits::VartimeMultiscalarMul,
 };
 use merlin::{Transcript, TranscriptRng};
 use rand::rngs::OsRng;
+use rayon::prelude::*;
 
 /// Parameters (bases) for Pedersen commitments.
 #[derive(Clone, Debug)]
@@ -64,7 +64,7 @@ impl Polynomial {
         }
 
         // compute Cf once
-        let cf = RistrettoPoint::vartime_multiscalar_mul(&x_padded, &pp.g) + pp.g_rho * rho_f;
+        let cf = msm(&x_padded, &pp.g) + pp.g_rho * rho_f;
 
         Self {
             coeffs,
@@ -79,12 +79,38 @@ impl Polynomial {
         self.coeffs.len() - 1
     }
 
-    /// Evaluate f(z) with Horner's rule.
+    /// Evaluate f(z) with a parallel block-Horner for large polynomials.
     pub fn eval(&self, z: &Scalar) -> Scalar {
-        self.coeffs
-            .iter()
+        let coeffs = &self.coeffs;
+
+        // Threshold where threads start to pay off (tune for your machine).
+        const PAR_THRESHOLD: usize = 64;
+        // Block size for baby-step/giant-step Horner (64/128 are good starting points).
+        const B: usize = 32;
+
+        if coeffs.len() < PAR_THRESHOLD {
+            // Original sequential Horner (fast for small n).
+            return coeffs
+                .iter()
+                .rev()
+                .fold(Scalar::ZERO, |acc, &c| acc * z + c);
+        }
+
+        // Precompute z^B
+        let zB = (0..B).fold(Scalar::ONE, |acc, _| acc * z);
+
+        // 1) Parallel: Horner-evaluate each block of size B with base z
+        let blocks: Vec<Scalar> = coeffs
+            .par_chunks(B)
+            .map(|chunk| chunk.iter().rev().fold(Scalar::ZERO, |acc, &c| acc * z + c))
+            .collect();
+
+        // 2) Combine block results with base z^B:
+        //    ((((b_k) * z^B + b_{k-1}) * z^B + ...) * z^B + b_0)
+        blocks
+            .into_iter()
             .rev()
-            .fold(Scalar::ZERO, |acc, &c| acc * z + c)
+            .fold(Scalar::ZERO, |acc, b| acc * zB + b)
     }
 
     /// Commit to coefficients with randomness rho_f.
@@ -101,8 +127,7 @@ impl Polynomial {
             scalars.resize(m, Scalar::ZERO);
         }
 
-        // Fast variable-time MSM (OK for benchmarking; avoid in constant-time contexts)
-        RistrettoPoint::vartime_multiscalar_mul(&scalars, &pp.g) + pp.g_rho * rho_f
+        msm(&scalars, &pp.g) + pp.g_rho * rho_f
     }
 
     /// Produce (y, proof, public inputs) for f(z), reusing cached Cf and rho_f.

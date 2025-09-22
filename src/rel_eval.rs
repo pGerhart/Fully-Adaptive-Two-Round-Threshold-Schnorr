@@ -146,21 +146,19 @@ pub fn verify_rel_eval(
 
 #[cfg(test)]
 mod tests {
-    use super::*; // if placed next to your prove/verify; remove if using integration test
+    use super::*;
     use curve25519_dalek::{
         ristretto::RistrettoPoint, scalar::Scalar, traits::VartimeMultiscalarMul,
     };
     use merlin::Transcript;
     use rand::rngs::OsRng;
 
-    // reuse your helpers & setup just like in the bench
     use crate::helpers::{h2p, next_pow2, rand_scalar};
     use crate::sig_setup::SigParams;
 
     #[test]
     fn rel_eval_roundtrip() {
-        // --- setup (reuse bench style) ---
-        let degree = 1usize << 6; // small, fast test (2^6). change if you want.
+        let degree = 1usize << 6;
         let n = next_pow2(degree + 1);
         let domain = format!("RelEvalTest/deg={degree}");
         let sp = SigParams::setup(n, degree, &domain);

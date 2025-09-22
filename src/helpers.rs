@@ -14,20 +14,9 @@ use curve25519_dalek::{
 use rand::RngCore;
 use rand::rngs::OsRng;
 
-#[cfg(not(feature = "fast-hash"))]
 use sha2::{Digest, Sha512};
 
-#[cfg(feature = "fast-hash")]
-use blake3::Hasher;
-
-// --------------------------------------------------------------------------------------
-// Hash-to-point (64 uniform bytes -> Ristretto)
-// --------------------------------------------------------------------------------------
-
 /// Derive a Ristretto generator deterministically from (domain, tag, i).
-///
-/// Default: SHA-512 (portable & conservative).
-/// Enable `fast-hash` feature to use BLAKE3 XOF (much faster).
 #[inline]
 pub fn h2p(domain: &str, tag: &str, i: u64) -> RistrettoPoint {
     let mut h = Sha512::new();
@@ -43,23 +32,20 @@ pub fn h2p(domain: &str, tag: &str, i: u64) -> RistrettoPoint {
 // MSM (multi-scalar multiplication)
 // --------------------------------------------------------------------------------------
 
-/// Constant-time MSM (use when you need side-channel hardening).
+/// Constant-time MSM (side-channel hardening).
 #[inline]
 pub fn msm_ct(points: &[RistrettoPoint], scalars: &[Scalar]) -> RistrettoPoint {
     // Note: takes iterators; this version is constant-time but slower.
     RistrettoPoint::multiscalar_mul(scalars.iter(), points.iter())
 }
 
-/// Variable-time MSM — **much faster** and ideal for benchmarking/proofs
-/// where scalars are not secret (or you're okay with vartime for perf).
 #[inline]
 pub fn msm_vt(points: &[RistrettoPoint], scalars: &[Scalar]) -> RistrettoPoint {
     RistrettoPoint::vartime_multiscalar_mul(scalars, points)
 }
 
-// Backwards-compatible alias (previously you had `msm`).
 #[inline]
-pub fn msm(points: &[RistrettoPoint], scalars: &[Scalar]) -> RistrettoPoint {
+pub fn msm(scalars: &[Scalar], points: &[RistrettoPoint]) -> RistrettoPoint {
     msm_vt(points, scalars)
 }
 
@@ -91,7 +77,7 @@ pub fn pad_zeros_in_place(v: &mut Vec<Scalar>, m: usize) {
     }
 }
 
-/// Return a **new** padded vector. Prefer `pad_zeros_in_place` in hot paths.
+/// Return a new padded vector.
 #[inline]
 pub fn pad_zeros(mut v: Vec<Scalar>, m: usize) -> Vec<Scalar> {
     pad_zeros_in_place(&mut v, m);
@@ -100,7 +86,7 @@ pub fn pad_zeros(mut v: Vec<Scalar>, m: usize) -> Vec<Scalar> {
 
 /// Fill `powers` with `[1, z, z^2, ..., z^(n-1)]`, reusing its capacity.
 #[inline]
-pub fn fill_vandermonde_in_place(powers: &mut Vec<Scalar>, z: Scalar, n: usize) {
+pub fn vandermonde(powers: &mut Vec<Scalar>, z: Scalar, n: usize) {
     powers.clear();
     powers.reserve(n.saturating_sub(powers.capacity()));
     let mut pow = Scalar::ONE;
@@ -163,16 +149,4 @@ pub fn powers_and_eval(coeffs: &[Scalar], z: Scalar) -> (Vec<Scalar>, Scalar) {
     let mut a = Vec::with_capacity(coeffs.len());
     let y = eval_and_maybe_powers(coeffs, z, Some(&mut a));
     (a, y)
-}
-
-/// Convenience: build `[1, z, ..., z^d]` in a **new** Vec. Prefer in-place in hot paths.
-#[inline]
-pub fn vandermonde(z: Scalar, d: usize) -> Vec<Scalar> {
-    let mut a = Vec::with_capacity(d + 1);
-    let mut pow = Scalar::ONE;
-    for _ in 0..=d {
-        a.push(pow);
-        pow *= z;
-    }
-    a
 }
