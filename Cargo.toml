@@ -10,7 +10,7 @@ merlin = "3"
 rand = "0.8"
 sha2 = "0.10"
 blake3 = { version = "1", optional = true }
-
+rayon = "1.10"
 
 [profile.release]
 opt-level = 3

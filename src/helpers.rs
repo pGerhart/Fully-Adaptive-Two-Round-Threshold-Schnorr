@@ -30,27 +30,13 @@ use blake3::Hasher;
 /// Enable `fast-hash` feature to use BLAKE3 XOF (much faster).
 #[inline]
 pub fn h2p(domain: &str, tag: &str, i: u64) -> RistrettoPoint {
-    #[cfg(feature = "fast-hash")]
-    {
-        let mut h = Hasher::new();
-        h.update(domain.as_bytes());
-        h.update(tag.as_bytes());
-        h.update(&i.to_le_bytes());
-        let mut out = [0u8; 64];
-        h.finalize_xof().fill(&mut out);
-        return RistrettoPoint::from_uniform_bytes(&out);
-    }
-
-    #[cfg(not(feature = "fast-hash"))]
-    {
-        let mut h = Sha512::new();
-        h.update(domain.as_bytes());
-        h.update(tag.as_bytes());
-        h.update(&i.to_le_bytes());
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&h.finalize());
-        RistrettoPoint::from_uniform_bytes(&out)
-    }
+    let mut h = Sha512::new();
+    h.update(domain.as_bytes());
+    h.update(tag.as_bytes());
+    h.update(&i.to_le_bytes());
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&h.finalize());
+    RistrettoPoint::from_uniform_bytes(&out)
 }
 
 // --------------------------------------------------------------------------------------

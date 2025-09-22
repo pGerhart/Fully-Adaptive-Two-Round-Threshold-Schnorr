@@ -2,6 +2,7 @@ use crate::sig_setup::SigParams;
 use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar, traits::VartimeMultiscalarMul};
 use merlin::Transcript;
 use rand::{CryptoRng, RngCore};
+use rayon::join;
 
 /// Compact Σ-proof for the relation:
 ///   R  = g^r * h1^w * h2^u
@@ -69,14 +70,15 @@ pub fn prove_rel_eval<RNG: RngCore + CryptoRng>(
     let k_w = Scalar::random(rng);
     let k_x = Scalar::random(rng);
 
-    // T1 = g^{k_r} g_rho^{k_rho}
-    let T1 = RistrettoPoint::vartime_multiscalar_mul([k_r, k_rho], [sp.g, sp.pp.g_rho]);
-
-    // T2 = g^{k_r} h1^{k_w} h2^{k_u}
-    let T2 = RistrettoPoint::vartime_multiscalar_mul([k_r, k_w, k_u], [sp.g, *h1, *h2]);
-
-    // T3 = g^{k_x} h^{k_w} v^{k_u}
-    let T3 = RistrettoPoint::vartime_multiscalar_mul([k_x, k_w, k_u], [sp.g, sp.h, sp.v]);
+    let (T1, (T2, T3)) = join(
+        || RistrettoPoint::vartime_multiscalar_mul([k_r, k_rho], [sp.g, sp.pp.g_rho]),
+        || {
+            join(
+                || RistrettoPoint::vartime_multiscalar_mul([k_r, k_w, k_u], [sp.g, *h1, *h2]),
+                || RistrettoPoint::vartime_multiscalar_mul([k_x, k_w, k_u], [sp.g, sp.h, sp.v]),
+            )
+        },
+    );
 
     // Fiat–Shamir challenge
     let c = absorb_for_challenge(&mut tr, &T1, &T2, &T3, R, Cr, C);
@@ -111,24 +113,97 @@ pub fn verify_rel_eval(
 ) -> bool {
     let c = proof.c;
 
-    // Recompute T1' = g^{z_r} g_rho^{z_rho} * Cr^{-c}
-    let T1p = RistrettoPoint::vartime_multiscalar_mul([proof.z_r, proof.z_rho, -c], [
-        sp.g,
-        sp.pp.g_rho,
-        *Cr,
-    ]);
-
-    // Recompute T2' = g^{z_r} h1^{z_w} h2^{z_u} * R^{-c}
-    let T2p = RistrettoPoint::vartime_multiscalar_mul([proof.z_r, proof.z_w, proof.z_u, -c], [
-        sp.g, *h1, *h2, *R,
-    ]);
-
-    // Recompute T3' = g^{z_x} h^{z_w} v^{z_u} * C^{-c}
-    let T3p = RistrettoPoint::vartime_multiscalar_mul([proof.z_x, proof.z_w, proof.z_u, -c], [
-        sp.g, sp.h, sp.v, *C,
-    ]);
+    let (T1p, (T2p, T3p)) = join(
+        || {
+            RistrettoPoint::vartime_multiscalar_mul([proof.z_r, proof.z_rho, -c], [
+                sp.g,
+                sp.pp.g_rho,
+                *Cr,
+            ])
+        },
+        || {
+            join(
+                || {
+                    RistrettoPoint::vartime_multiscalar_mul(
+                        [proof.z_r, proof.z_w, proof.z_u, -c],
+                        [sp.g, *h1, *h2, *R],
+                    )
+                },
+                || {
+                    RistrettoPoint::vartime_multiscalar_mul(
+                        [proof.z_x, proof.z_w, proof.z_u, -c],
+                        [sp.g, sp.h, sp.v, *C],
+                    )
+                },
+            )
+        },
+    );
 
     // Recreate challenge and compare
     let c_prime = absorb_for_challenge(&mut tr, &T1p, &T2p, &T3p, R, Cr, C);
     c_prime == c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*; // if placed next to your prove/verify; remove if using integration test
+    use curve25519_dalek::{
+        ristretto::RistrettoPoint, scalar::Scalar, traits::VartimeMultiscalarMul,
+    };
+    use merlin::Transcript;
+    use rand::rngs::OsRng;
+
+    // reuse your helpers & setup just like in the bench
+    use crate::helpers::{h2p, next_pow2, rand_scalar};
+    use crate::sig_setup::SigParams;
+
+    #[test]
+    fn rel_eval_roundtrip() {
+        // --- setup (reuse bench style) ---
+        let degree = 1usize << 6; // small, fast test (2^6). change if you want.
+        let n = next_pow2(degree + 1);
+        let domain = format!("RelEvalTest/deg={degree}");
+        let sp = SigParams::setup(n, degree, &domain);
+
+        // test bases
+        let h1 = h2p(&domain, "h1", 0);
+        let h2 = h2p(&domain, "h2", 0);
+
+        // witnesses
+        let r = rand_scalar();
+        let rho_r = rand_scalar();
+        let u = rand_scalar();
+        let w = rand_scalar();
+        let x = rand_scalar();
+
+        // public statements (match the relation)
+        // R  = g^r * h1^w * h2^u
+        let R = RistrettoPoint::vartime_multiscalar_mul([r, w, u], [sp.g, h1, h2]);
+        // Cr = g^r * g_rho^{rho_r}
+        let Cr = RistrettoPoint::vartime_multiscalar_mul([r, rho_r], [sp.g, sp.pp.g_rho]);
+        // C  = g^x * h^w * v^u
+        let C = RistrettoPoint::vartime_multiscalar_mul([x, w, u], [sp.g, sp.h, sp.v]);
+
+        // --- prove ---
+        let mut rng = OsRng;
+        let tr_prove = Transcript::new(b"RelEval");
+        let proof = prove_rel_eval(
+            tr_prove, &mut rng, &sp, &h1, &h2, &C, &R, &Cr, r, rho_r, u, w, x,
+        );
+
+        // --- verify (positive) ---
+        let tr_verify = Transcript::new(b"RelEval");
+        assert!(
+            verify_rel_eval(tr_verify, &sp, &h1, &h2, &C, &R, &Cr, &proof),
+            "valid proof should verify"
+        );
+
+        // --- verify (negative): tamper a statement ---
+        let C_bad = C + sp.g; // small deterministic tweak
+        let tr_verify_bad = Transcript::new(b"RelEval");
+        assert!(
+            !verify_rel_eval(tr_verify_bad, &sp, &h1, &h2, &C_bad, &R, &Cr, &proof),
+            "tampered instance should fail verification"
+        );
+    }
 }
