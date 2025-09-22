@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use crate::sig_setup::SigParams;
 use curve25519_dalek::{ristretto::RistrettoPoint, scalar::Scalar, traits::VartimeMultiscalarMul};
 use merlin::Transcript;
@@ -147,9 +148,7 @@ pub fn verify_rel_eval(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use curve25519_dalek::{
-        ristretto::RistrettoPoint, scalar::Scalar, traits::VartimeMultiscalarMul,
-    };
+    use curve25519_dalek::{ristretto::RistrettoPoint, traits::VartimeMultiscalarMul};
     use merlin::Transcript;
     use rand::rngs::OsRng;
 

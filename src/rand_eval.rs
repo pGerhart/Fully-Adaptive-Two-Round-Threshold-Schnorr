@@ -1,4 +1,4 @@
-// src/sig_eval.rs
+#![allow(non_snake_case)]
 use crate::helpers::msm;
 use crate::polynomial::PublicEval as PolyPublic; // for constructing PublicEval on verifier
 use crate::rel_eval::{RelEvalProof, prove_rel_eval, verify_rel_eval};

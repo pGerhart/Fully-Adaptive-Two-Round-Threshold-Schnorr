@@ -1,4 +1,4 @@
-// benches/bench_rel_eval.rs
+#![allow(non_snake_case)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use merlin::Transcript;
 use rand::rngs::OsRng;

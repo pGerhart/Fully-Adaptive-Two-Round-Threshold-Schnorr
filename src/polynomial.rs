@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use crate::helpers::{h2p, msm, next_pow2, rand_scalar};
 use bulletproofs::LinearProof;
 use curve25519_dalek::{

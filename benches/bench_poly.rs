@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use two_round_fully_adaptive::helpers::{next_pow2, rand_scalar};
 use two_round_fully_adaptive::polynomial::{Params, Polynomial, verify_eval};
