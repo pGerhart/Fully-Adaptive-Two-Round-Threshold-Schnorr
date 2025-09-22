@@ -1,8 +1,12 @@
-# RelEval Prototype
+# Fully-Adaptive Two-Round Threshold Schnorr Prototype
 
 This repository contains a prototype implementation accompanying the paper  
 **Fully-Adaptive Two-Round Threshold Schnorr Signatures from DDH**.
 
+**⚠️ Prototype Disclaimer**  
+This code is intended solely for research and benchmarking.
+It is a proof of concept and has not been audited, is not hardened against side-channel attacks,  
+and must not be used in production systems. Please use only in controlled, research, or testing environments.
 
 ## Overview
 
