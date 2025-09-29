@@ -12,7 +12,7 @@ fn bench_rel_eval(c: &mut Criterion) {
     let mut group = c.benchmark_group("rel_eval");
 
     // degrees = 2^4, 2^6, ..., 2^16
-    for exp in (4..=16).step_by(2) {
+    for exp in (4..=16).step_by(1) {
         let degree = 1usize << exp;
         let n = next_pow2(degree + 1); // t = n in your scheme
         let domain = format!("RelEvalBench/deg={degree}");
