@@ -7,7 +7,7 @@ fn bench_poly_eval(c: &mut Criterion) {
     let mut group = c.benchmark_group("poly_eval");
 
     // degrees = 2^4, 2^6, ..., 2^16
-    for exp in (4..=16).step_by(2) {
+    for exp in (4..=16).step_by(1) {
         let degree = 1usize << exp;
         let n = degree + 1;
         let m = next_pow2(n);
@@ -42,5 +42,55 @@ fn bench_poly_eval(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_poly_eval);
+fn bench_eval_vs_ro_eval(c: &mut Criterion) {
+    let mut group = c.benchmark_group("poly_eval_functions");
+
+    // degrees = 2^4, 2^6, ..., 2^16
+    for exp in (4..=16).step_by(1) {
+        let degree = 1usize << exp;
+        let n = degree + 1;
+        let m = next_pow2(n);
+
+        // Setup once
+        let pp = Params::setup(m, "PolyEvalFns");
+        let poly = Polynomial::random(degree, &pp);
+        let z = rand_scalar();
+        let key = rand_scalar(); // key for on-the-fly RO-based coefficients
+
+        // --- Stored-coeff evaluation: poly.eval(z) ---
+        group.bench_with_input(
+            BenchmarkId::new("eval_stored", degree),
+            &degree,
+            |b, &_deg| {
+                b.iter(|| {
+                    let y = poly.eval(&black_box(z));
+                    black_box(y);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("eval_ro_cha_cha", degree),
+            &degree,
+            |b, &_deg| {
+                b.iter(|| {
+                    let y = Polynomial::eval_with_prf_chacha12(&black_box(z), degree, &key);
+                    black_box(y);
+                });
+            },
+        );
+
+        // --- On-the-fly RO evaluation: Polynomial::eval_with_ro(z, degree, key) ---
+        group.bench_with_input(BenchmarkId::new("eval_ro", degree), &degree, |b, &_deg| {
+            b.iter(|| {
+                let y = Polynomial::eval_with_ro(&black_box(z), degree, &key);
+                black_box(y);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_eval_vs_ro_eval);
 criterion_main!(benches);

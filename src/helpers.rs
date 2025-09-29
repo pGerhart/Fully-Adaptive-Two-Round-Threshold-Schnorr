@@ -3,6 +3,9 @@ use curve25519_dalek::{
     scalar::Scalar,
     traits::{MultiscalarMul, VartimeMultiscalarMul},
 };
+
+use chacha20::ChaCha12;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
 use rand::RngCore;
 use rand::rngs::OsRng;
 
@@ -141,4 +144,38 @@ pub fn powers_and_eval(coeffs: &[Scalar], z: Scalar) -> (Vec<Scalar>, Scalar) {
     let mut a = Vec::with_capacity(coeffs.len());
     let y = eval_and_maybe_powers(coeffs, z, Some(&mut a));
     (a, y)
+}
+
+/// a_i = H(key || i) mapped to a Scalar via SHA-512
+pub fn coeff_at(key: &Scalar, i: usize) -> Scalar {
+    // Optional domain separator to avoid cross-protocol collisions.
+    const DST: &[u8] = b"poly-coeff";
+
+    let mut h = Sha512::new();
+    h.update(DST);
+    h.update(key.to_bytes());
+    h.update((i as u64).to_le_bytes());
+    Scalar::from_hash(h)
+}
+
+#[inline(always)]
+pub fn coeff_from_state(base: &Sha512, i: usize) -> Scalar {
+    // Clone pre-absorbed state (DST||key), then just absorb i and finish.
+    let mut h = base.clone();
+    h.update((i as u64).to_le_bytes());
+    Scalar::from_hash(h)
+}
+
+/// a_i = ChaCha12(key, nonce=i)[:64] reduced mod l
+#[inline(always)]
+pub fn coeff_at_chacha12(key: &Scalar, i: usize) -> Scalar {
+    let key_bytes = key.to_bytes(); // 32 bytes
+    let mut nonce = [0u8; 12]; // 96-bit nonce
+    nonce[..8].copy_from_slice(&(i as u64).to_le_bytes());
+
+    let mut cipher = ChaCha12::new(&key_bytes.into(), &nonce.into());
+    let mut buf = [0u8; 64];
+    cipher.apply_keystream(&mut buf);
+
+    Scalar::from_bytes_mod_order_wide(&buf)
 }

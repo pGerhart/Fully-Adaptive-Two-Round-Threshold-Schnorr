@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
-use crate::helpers::{h2p, msm, next_pow2, rand_scalar};
+use crate::helpers::{
+    coeff_at, coeff_at_chacha12, coeff_from_state, h2p, msm, next_pow2, rand_scalar,
+};
 use bulletproofs::LinearProof;
 use curve25519_dalek::{
     ristretto::{CompressedRistretto, RistrettoPoint},
@@ -8,6 +10,7 @@ use curve25519_dalek::{
 use merlin::{Transcript, TranscriptRng};
 use rand::rngs::OsRng;
 use rayon::prelude::*;
+use sha2::{Digest, Sha512};
 
 /// Parameters (bases) for Pedersen commitments.
 #[derive(Clone, Debug)]
@@ -80,38 +83,148 @@ impl Polynomial {
         self.coeffs.len() - 1
     }
 
-    /// Evaluate f(z) with a parallel block-Horner for large polynomials.
+    // stored-coeffs evaluator
     pub fn eval(&self, z: &Scalar) -> Scalar {
         let coeffs = &self.coeffs;
 
-        // Threshold where threads start to pay off (tune for your machine).
         const PAR_THRESHOLD: usize = 64;
-        // Block size for baby-step/giant-step Horner (64/128 are good starting points).
         const B: usize = 32;
 
         if coeffs.len() < PAR_THRESHOLD {
-            // Original sequential Horner (fast for small n).
             return coeffs
                 .iter()
                 .rev()
                 .fold(Scalar::ZERO, |acc, &c| acc * z + c);
         }
 
-        // Precompute z^B
-        let zB = (0..B).fold(Scalar::ONE, |acc, _| acc * z);
+        // Precompute z^k for k=0..=B
+        let mut z_pows = [Scalar::ONE; B + 1];
+        for k in 1..=B {
+            z_pows[k] = z_pows[k - 1] * z;
+        }
 
-        // 1) Parallel: Horner-evaluate each block of size B with base z
-        let blocks: Vec<Scalar> = coeffs
+        // 1) Parallel: evaluate each chunk and keep its length
+        let blocks: Vec<(Scalar, usize)> = coeffs
             .par_chunks(B)
-            .map(|chunk| chunk.iter().rev().fold(Scalar::ZERO, |acc, &c| acc * z + c))
+            .map(|chunk| {
+                let mut acc = Scalar::ZERO;
+                for &c in chunk.iter().rev() {
+                    acc = acc * z + c;
+                }
+                (acc, chunk.len())
+            })
             .collect();
 
-        // 2) Combine block results with base z^B:
-        //    ((((b_k) * z^B + b_{k-1}) * z^B + ...) * z^B + b_0)
+        // 2) Combine with z^{len(block)} (NOT constant z^B)
         blocks
             .into_iter()
             .rev()
-            .fold(Scalar::ZERO, |acc, b| acc * zB + b)
+            .fold(Scalar::ZERO, |acc, (bval, blen)| acc * z_pows[blen] + bval)
+    }
+
+    // RO-on-the-fly evaluator
+    pub fn eval_with_ro(z: &Scalar, degree: usize, key: &Scalar) -> Scalar {
+        const PAR_THRESHOLD: usize = 64;
+        const B: usize = 32;
+
+        // Build the pre-absorbed SHA-512 state once: DST || key
+        const DST: &[u8] = b"poly-coeff";
+        let mut base = Sha512::new();
+        base.update(DST);
+        base.update(key.to_bytes());
+
+        // Small degrees: sequential Horner using the cloned state trick.
+        if degree < PAR_THRESHOLD {
+            return (0..=degree)
+                .rev()
+                .fold(Scalar::ZERO, |acc, i| acc * z + coeff_from_state(&base, i));
+        }
+
+        // Precompute z^k for k=0..=B (for tail block combining)
+        let mut z_pows = [Scalar::ONE; B + 1];
+        for k in 1..=B {
+            z_pows[k] = z_pows[k - 1] * z;
+        }
+
+        // Ordered block starts for stable combine
+        let starts: Vec<usize> = (0..=degree).step_by(B).collect();
+
+        let blocks: Vec<(Scalar, usize)> = starts
+            .into_par_iter()
+            .map(|start| {
+                let end = core::cmp::min(start + B, degree + 1);
+                let blen = end - start;
+
+                // Derive block coefficients once (forward), then reversed Horner.
+                // Keep on stack for small B.
+                let mut buf: [Scalar; B] = [Scalar::ZERO; B];
+                for (off, i) in (start..end).enumerate() {
+                    buf[off] = coeff_from_state(&base, i);
+                }
+
+                // Fast path: full block unrolled-ish
+                let mut acc = Scalar::ZERO;
+                for j in (0..blen).rev() {
+                    acc = acc * z + unsafe { *buf.get_unchecked(j) };
+                }
+                (acc, blen)
+            })
+            .collect();
+
+        // Combine with z^{len(block)} (correct for tail)
+        blocks
+            .into_iter()
+            .rev()
+            .fold(Scalar::ZERO, |acc, (bval, blen)| acc * z_pows[blen] + bval)
+    }
+
+    pub fn eval_with_prf_chacha12(z: &Scalar, degree: usize, key: &Scalar) -> Scalar {
+        const PAR_THRESHOLD: usize = 64;
+        const B: usize = 32;
+
+        // Small degrees: sequential Horner
+        if degree < PAR_THRESHOLD {
+            return (0..=degree)
+                .rev()
+                .fold(Scalar::ZERO, |acc, i| acc * z + coeff_at_chacha12(key, i));
+        }
+
+        // Precompute z^k for k=0..=B (correct tail combination)
+        let mut z_pows = [Scalar::ONE; B + 1];
+        for k in 1..=B {
+            z_pows[k] = z_pows[k - 1] * z;
+        }
+
+        // Ordered block starts for stable combine
+        let starts: Vec<usize> = (0..=degree).step_by(B).collect();
+
+        // Parallel per-block: derive coeffs, then reversed Horner in the block
+        let blocks: Vec<(Scalar, usize)> = starts
+            .into_par_iter()
+            .map(|start| {
+                let end = core::cmp::min(start + B, degree + 1);
+                let blen = end - start;
+
+                // derive block coeffs into a small stack buffer
+                let mut buf: [Scalar; B] = [Scalar::ZERO; B];
+                for (off, i) in (start..end).enumerate() {
+                    buf[off] = coeff_at_chacha12(key, i);
+                }
+
+                let mut acc = Scalar::ZERO;
+                for j in (0..blen).rev() {
+                    // SAFETY: j < blen <= B
+                    acc = acc * z + unsafe { *buf.get_unchecked(j) };
+                }
+                (acc, blen)
+            })
+            .collect();
+
+        // Combine blocks with z^{len(block)}
+        blocks
+            .into_iter()
+            .rev()
+            .fold(Scalar::ZERO, |acc, (bval, blen)| acc * z_pows[blen] + bval)
     }
 
     /// Commit to coefficients with randomness rho_f.
@@ -223,4 +336,108 @@ pub fn verify_eval(public: &PublicEval, proof: &LinearProof, pp: &Params) -> boo
             public.a.clone(),
         )
         .is_ok()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::RngCore;
+    use rayon::iter::ParallelBridge; // for par_bridge()
+    use rayon::prelude::*;
+
+    /// Helper: make a Polynomial whose coeffs are derived from the RO:
+    /// a_i = coeff_at(key, i), for i = 0..=degree.
+    fn poly_from_ro_coeffs(degree: usize, key: &Scalar, pp: &Params) -> Polynomial {
+        // Build coeffs deterministically from the RO
+        let coeffs: Vec<Scalar> = (0..=degree).map(|i| coeff_at(key, i)).collect();
+
+        // Random blinding and commitment (to satisfy struct invariants)
+        let rho_f = rand_scalar();
+
+        // Cache padded coeffs and commitment, mirroring Polynomial::random
+        let n = coeffs.len();
+        let m = pp.g.len();
+        assert!(m.is_power_of_two());
+        assert!(m >= n, "Params.g too short for polynomial degree");
+
+        let mut x_padded = Vec::with_capacity(m);
+        x_padded.extend_from_slice(&coeffs);
+        if m > n {
+            x_padded.resize(m, Scalar::ZERO);
+        }
+        let cf = msm(&x_padded, &pp.g) + pp.g_rho * rho_f;
+
+        Polynomial {
+            coeffs,
+            rho_f,
+            cf,
+            x_padded,
+            m,
+        }
+    }
+
+    /// Random Scalar using OsRng.
+    fn rand_scalar_os() -> Scalar {
+        rand_scalar()
+    }
+
+    #[test]
+    fn eval_matches_eval_with_ro_randomized() {
+        // Run multiple randomized trials; cover both small and large degrees.
+        // Include some hand-picked degrees around thresholds.
+        let mut degrees = vec![
+            0usize, 1, 2, 7, 31, 32, 33, 63, 64, 65, 128, 255, 256, 511, 512, 1023,
+        ];
+        // Add a few random degrees in [0, 1200]
+        let mut rng = rand::thread_rng();
+        for _ in 0..8 {
+            degrees.push((rng.next_u64() as usize) % 1201);
+        }
+
+        for degree in degrees {
+            // Setup params with enough bases (next power-of-two >= degree+1)
+            let pp = Params::setup(degree + 1, "TestDomain");
+
+            // Random key and evaluation point
+            let key = rand_scalar_os();
+            let z = rand_scalar_os();
+
+            // Build polynomial with RO-derived coefficients
+            let poly = poly_from_ro_coeffs(degree, &key, &pp);
+
+            // Evaluate both ways
+            let y_coeffs = poly.eval(&z);
+            let y_ro = Polynomial::eval_with_ro(&z, degree, &key);
+
+            assert_eq!(
+                y_coeffs,
+                y_ro,
+                "mismatch for degree={} (z={}, key={})",
+                degree,
+                hex::encode(z.to_bytes()),
+                hex::encode(key.to_bytes())
+            );
+        }
+    }
+
+    #[test]
+    fn eval_matches_eval_with_ro_many_random_trials() {
+        // Lighter degrees, more trials for sanity.
+        let trials = 50;
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..trials {
+            let degree = (rng.next_u64() as usize) % 300; // 0..=299
+            let pp = Params::setup(degree + 1, "TestDomain");
+
+            let key = rand_scalar();
+            let z = rand_scalar();
+
+            let poly = poly_from_ro_coeffs(degree, &key, &pp);
+
+            let y_coeffs = poly.eval(&z);
+            let y_ro = Polynomial::eval_with_ro(&z, degree, &key);
+
+            assert_eq!(y_coeffs, y_ro, "mismatch in randomized trial");
+        }
+    }
 }
